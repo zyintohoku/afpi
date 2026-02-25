@@ -7,3 +7,5 @@ real image reconstruction:
 
 `python skip_inv_real.py --output 'filename'`
 
+prompt-to-prompt editing:
+`python p2p.py --inv_method 'filename'`
