@@ -1,1 +1,4 @@
 PIE_bench/
+*.log
+__pycache__/
+outputs/*

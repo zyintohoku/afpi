@@ -1,12 +1,11 @@
 import numpy as np
-from tqdm import tqdm
 import torch
-from PIL import Image, ImageDraw, ImageFont
-from typing import Optional, Union, Tuple, List, Callable, Dict
-from diffusers.models.attention import BasicTransformerBlock
+from PIL import Image
+from typing import Optional, Union, Tuple, List, Dict
 from diffusers.models.attention_processor import AttnProcessor2_0, Attention
 
 
+# NOTE: `view_images` is currently unused but kept as a utility.
 def view_images(images, num_rows=1, offset_ratio=0.02):
     if type(images) is list:
         num_empty = len(images) % num_rows
@@ -68,14 +67,10 @@ def text2image_ldm_stable(
         context = torch.cat(context)
     latent, latents = init_latent(latent, model, height, width, generator, batch_size)
     
-    # set timesteps
-    #extra_set_kwargs = {"offset": 1}
-    #model.scheduler.set_timesteps(num_inference_steps, **extra_set_kwargs)
     model.scheduler.set_timesteps(num_inference_steps)
     for i, t in enumerate(model.scheduler.timesteps):
         if cfg_schedule is not None:
             guidance_scale = cfg_schedule[i]
-        print(guidance_scale)
         latents = diffusion_step(model, controller, latents, context, t, guidance_scale, low_resource)
     
     image = latent2image(model.vae, latents)
@@ -92,6 +87,10 @@ def init_latent(latent, model, height, width, generator, batch_size):
     return latent, latents
 
 def diffusion_step(model, controller, latents, context, t, guidance_scale, low_resource=False):
+    # NOTE: `controller` param is unused here. Attention control happens via
+    # hooked processors (CustomAttnProcessorV2) inside the UNet forward pass,
+    # not through this function. Kept for potential future use (e.g. LocalBlend
+    # step_callback).
     if low_resource:
         noise_pred_uncond = model.unet(latents, t, encoder_hidden_states=context[0])["sample"]
         noise_prediction_text = model.unet(latents, t, encoder_hidden_states=context[1])["sample"]
@@ -100,7 +99,6 @@ def diffusion_step(model, controller, latents, context, t, guidance_scale, low_r
         noise_pred = model.unet(latents_input, t, encoder_hidden_states=context)["sample"]
         noise_pred_uncond, noise_prediction_text = noise_pred.chunk(2)
     noise_pred = noise_pred_uncond + guidance_scale * (noise_prediction_text - noise_pred_uncond)
-    #breakpoint()
     latents = model.scheduler.step(noise_pred, t, latents)["prev_sample"]
     #latents = controller.step_callback(latents)
     return latents
@@ -178,7 +176,6 @@ def register_attention_control_v2(pipe, controller):
     def register_recr(net_, count, place_in_unet):
         if net_.__class__.__name__ == 'Attention':
             net_.set_processor(CustomAttnProcessorV2(controller, place_in_unet))
-            # net_.forward = ca_forward(net_, place_in_unet)
             return count + 1
         elif hasattr(net_, 'children'):
             for net__ in net_.children():

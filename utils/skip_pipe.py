@@ -131,21 +131,13 @@ class analysis_Inversion(Inversion):
         timesteps = self.model.scheduler.timesteps
         total_steps = self.num_ddim_steps
         fpi_conv_list, cfg_div_list = [], []
-        #cfg_scale = guidance_scale
         fpi_conv_state = True
         cfg_schedule = []
         for i in range(total_steps):
             latent_temp = latent.clone().detach()
-            #guidance_scale = cfg_scale
-            #guidance_scale = guidance_scale + 1 if guidance_scale < 7 else 7
             t = timesteps[-i - 1]
-            #if t<500:
-            #    self.threshold = 5e-14
-            #else:
-            #    self.threshold = 2e-14
             while guidance_scale >= 0:
 
-                print(guidance_scale, t.item())
                 latent_input = torch.cat([latent] * 2)
 
                 noise_pred = self.get_noise_pred_single(latent_input, t, self.context)
@@ -175,13 +167,7 @@ class analysis_Inversion(Inversion):
                     cfg_div_list.append(cfg_div)
                     cfg_schedule.append(guidance_scale)
                     break
-                #dist_losses.append(dist_loss)
         return all_latent, fpi_conv_list, cfg_div_list, cfg_schedule
-
-    #def invert(self, image_latent, prompt: str, guidance_scale):
-    #    self.init_prompt(prompt)
-    #    all_latent, fpi_conv_list, cfg_div_list = self.loop(image_latent, guidance_scale)
-    #    return all_latent, fpi_conv_list, cfg_div_list
 
     def fpi_step(self, init_latent, latent_ztm1, t, guidance_scale):
         optimal_latent = init_latent.clone().detach()
@@ -218,19 +204,14 @@ class analysis_Inversion(Inversion):
 
             updated_latent = self.next_step(guided_noise, t, latent_ztm1)
             loss = F.mse_loss(updated_latent, optimal_latent).item()
-            print(loss)
-            #print(loss, F.mse_loss(noise_uncond, noise_cond).item())
             if loss < self.threshold:
                 fpi_conv_state = True
                 break
-            #if self.conv_check and loss > loss_prev:
-            #    break
             if loss > loss_prev:
                 fpi_conv_state = False
                 break
             optimal_latent = 0.5 * optimal_latent + 0.5 * updated_latent
             loss_prev = loss
-        #return optimal_latent.detach(), F.mse_loss(noise_uncond, noise_cond).item()
         return optimal_latent.detach(), loss, F.mse_loss(noise_uncond, noise_cond).item(), fpi_conv_state
 
     def afpi_step(self, init_latent, latent_ztm1, t, guidance_scale):
@@ -240,7 +221,6 @@ class analysis_Inversion(Inversion):
         alpha = 1.0
         loss_prev = 1.0
 
-        fp_th = self.fp_th
         fpi_conv_state = False
         for rid in range(self.opt_round):
             latent_input = torch.cat([optimal_latent] * 2)
@@ -250,7 +230,6 @@ class analysis_Inversion(Inversion):
 
             updated_latent = self.next_step(guided_noise, t, latent_ztm1)
             loss = F.mse_loss(updated_latent, optimal_latent).item()
-            print(loss)
             if loss < self.threshold:
                 fpi_conv_state = True
                 break
