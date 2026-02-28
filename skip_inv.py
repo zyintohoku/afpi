@@ -26,10 +26,12 @@ torch.backends.cudnn.allow_tf32 = False
 @torch.no_grad()
 def main(
         output_dir='output',
-        guidance_scale=7.5,
+        guidance_scale=7,
         K_round=50,
         num_of_ddim_steps=50,
-        delta_threshold=5e-12,
+        delta_threshold=5e-13,
+        start=0,
+        end=700,
         **kwargs
 ):
     os.makedirs(output_dir, exist_ok=True)
@@ -42,20 +44,27 @@ def main(
     with open(f"PIE_bench/mapping_file.json", "r") as f:
         editing_instruction = json.load(f)
 
+    # Pre-generate ALL 700 init_latents to keep random state deterministic
+    # regardless of which partition [start, end) we process.
+    total_samples = len(editing_instruction)
+    all_init_latents = []
+    for _ in range(total_samples):
+        all_init_latents.append(torch.randn(1, 4, 64, 64))
+
     init_latents, inv_latents, gen_latents, rec_latents = [], [], [], []
     cfg_schedules = []
     total_time = 0.0
     for i,(_, item) in enumerate(tqdm(editing_instruction.items())):
-        init_latent = torch.randn(1, 4, 64, 64).to('cuda')
-        if i<17:
+        if i < start or i >= end:
             continue
+        init_latent = all_init_latents[i].to('cuda')
         prompt = item["original_prompt"].replace("[", "").replace("]", "")
         image_gen, inter_latents, _ = ldm_stable(prompt=prompt, latents=init_latent, guidance_scale=_GEN_GUIDE_SCALE)
         image_gen[0].save(f'{output_dir}/{i}gen.png')
         gen_latent = inter_latents[-1]
         assert inversion.method in ['afpi']
         start_time = time.time()
-        inter_inv_latents, _, _, cfg_schedule = inversion.invert(gen_latent, prompt, guidance_scale=_GEN_GUIDE_SCALE)
+        inter_inv_latents, _, _, cfg_schedule = inversion.invert(gen_latent, prompt, guidance_scale=guidance_scale)
         end_time = time.time()
         total_time += (end_time - start_time)
         inv_latent = inter_inv_latents[-1]
@@ -67,19 +76,20 @@ def main(
         gen_latents.append(gen_latent)
         rec_latents.append(rec_latents_list[-1])
         cfg_schedules.append(cfg_schedule)
-    print('total_time:', total_time,'time/sample:', total_time/700)
-    torch.save(init_latents, f'{output_dir}/init_latents.pt')
-    torch.save(inv_latents, f'{output_dir}/inv_latents.pt')
-    torch.save(gen_latents, f'{output_dir}/gen_latents.pt')
-    torch.save(rec_latents, f'{output_dir}/rec_latents.pt')
-    torch.save(cfg_schedules, f'{output_dir}/cfg_schedules.pt')
+    num_samples = end - start
+    print(f'[Part {start}-{end}] total_time: {total_time}  time/sample: {total_time/num_samples}')
+    torch.save(init_latents, f'{output_dir}/init_latents_{start}_{end}.pt')
+    torch.save(inv_latents, f'{output_dir}/inv_latents_{start}_{end}.pt')
+    torch.save(gen_latents, f'{output_dir}/gen_latents_{start}_{end}.pt')
+    torch.save(rec_latents, f'{output_dir}/rec_latents_{start}_{end}.pt')
+    torch.save(cfg_schedules, f'{output_dir}/cfg_schedules_{start}_{end}.pt')
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--K_round",
         type=int,
-        default=500,
+        default=50,
         help="Optimization Round",
     )
     parser.add_argument(
@@ -110,6 +120,18 @@ def parse_args():
         type=int,
         default=0,
     )
+    parser.add_argument(
+        "--start",
+        type=int,
+        default=0,
+        help="Start sample index (inclusive)",
+    )
+    parser.add_argument(
+        "--end",
+        type=int,
+        default=700,
+        help="End sample index (exclusive)",
+    )
     args = parser.parse_args()
     return args
 
@@ -122,5 +144,7 @@ if __name__ == "__main__":
     params['num_of_ddim_steps'] = args.num_of_ddim_steps
     params['delta_threshold'] = args.delta_threshold
     params['output_dir'] = args.output
+    params['start'] = args.start
+    params['end'] = args.end
     torch.manual_seed(args.seed)
     main(**params)

@@ -2,3 +2,7 @@ PIE_bench/
 *.log
 __pycache__/
 outputs/*
+logs/*
+paper/*
+scripts/*
+Makefile

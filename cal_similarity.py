@@ -13,7 +13,6 @@ from tqdm import tqdm
 from skimage.metrics import structural_similarity as ssim
 from skimage.metrics import peak_signal_noise_ratio as psnr
 
-
 @dataclass
 class PairResult:
     stem: str
@@ -40,10 +39,11 @@ def compute_metrics(a: np.ndarray, b: np.ndarray) -> Tuple[float, float, float]:
 
 def build_pairs_diff_dir(
     rec_dir: Path,
+    gen_dir: Path,
     suffix_gen: str = "_gen.png",
     suffix_rec: str = "_rec.png",
 ) -> List[Tuple[str, Path, Path]]:
-    gen_dir = Path('cfg7/aidi')
+    gen_dir = Path(gen_dir)
     rec_dir = Path(rec_dir)
 
     # 1) gen_dir 里只拿 *_gen.png（忽略同目录里的 *_rec.png）
@@ -125,21 +125,30 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=str, required=True, help="包含_png 对的文件夹")
+    parser.add_argument("--gen_dir", type=str, default="", help="独立的 gen 图文件夹（为空则在 root 里找 gen）")
     parser.add_argument("--suffix_a", type=str, default="gen.png", help="A 图后缀")
     parser.add_argument("--suffix_b", type=str, default="rec.png", help="B 图后缀")
     parser.add_argument("--resize", type=str, default="", help="可选: WxH，比如 512x512；为空则不 resize")
     parser.add_argument("--out_csv", type=str, default="pair_metrics.csv")
     parser.add_argument("--out_summary", type=str, default="threshold_summary.csv")
-    parser.add_argument("--ssim_th", type=str, default="0.80,0.85,0.90,0.92,0.94,0.96,0.98",
-                        help="SSIM 阈值列表(逗号分隔)，统计 SSIM>=t 的占比")
-    parser.add_argument("--psnr_th", type=str, default="20,22,24,26,28,30,32",
-                        help="PSNR 阈值列表，统计 PSNR>=t 的占比")
-    parser.add_argument("--mse_th", type=str, default="0.010,0.005,0.003,0.002,0.001",
-                        help="MSE 阈值列表，统计 MSE<=t 的占比")
+    parser.add_argument("--ssim_th", type=float, nargs=2, default=[0.70, 0.98],
+                        metavar=("MIN", "MAX"), help="SSIM threshold range [min, max]")
+    parser.add_argument("--psnr_th", type=float, nargs=2, default=[20, 40],
+                        metavar=("MIN", "MAX"), help="PSNR threshold range [min, max]")
+    parser.add_argument("--mse_th", type=float, nargs=2, default=[0.001, 0.010],
+                        metavar=("MIN", "MAX"), help="MSE threshold range [min, max]")
+    parser.add_argument("--n_steps", type=int, default=10,
+                        help="Number of threshold intervals for all metrics")
     args = parser.parse_args()
 
     root = Path(args.root)
     assert root.exists(), f"not found: {root}"
+
+    # Put outputs into a 'result' subfolder under root
+    result_dir = root / "result"
+    result_dir.mkdir(parents=True, exist_ok=True)
+    out_csv = result_dir / args.out_csv
+    out_summary = result_dir / args.out_summary
 
     resize_to = None
     if args.resize.strip():
@@ -149,8 +158,12 @@ def main():
         w, h = int(m.group(1)), int(m.group(2))
         resize_to = (w, h)
 
-    pairs = build_pairs_single_dir(root, args.suffix_a, args.suffix_b)
-    #pairs = build_pairs_diff_dir(root, args.suffix_a, args.suffix_b)
+    if args.gen_dir:
+        gen_dir = Path(args.gen_dir)
+        assert gen_dir.exists(), f"gen_dir not found: {gen_dir}"
+        pairs = build_pairs_diff_dir(root, gen_dir, args.suffix_a, args.suffix_b)
+    else:
+        pairs = build_pairs_single_dir(root, args.suffix_a, args.suffix_b)
     if len(pairs) == 0:
         raise RuntimeError("没有找到任何配对。请检查文件名后缀/路径。")
 
@@ -168,7 +181,7 @@ def main():
         results.append(PairResult(stem=stem, ssim=ssim_val, psnr=psnr_val, mse=mse_val))
 
     # 导出每对的指标
-    with open(args.out_csv, "w", newline="", encoding="utf-8") as f:
+    with open(out_csv, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["stem", "ssim", "psnr", "mse"])
         for r in results:
@@ -178,16 +191,17 @@ def main():
     psnr_vals = np.array([r.psnr for r in results], dtype=np.float32)
     mse_vals = np.array([r.mse for r in results], dtype=np.float32)
 
-    ssim_th = [float(x) for x in args.ssim_th.split(",") if x.strip()]
-    psnr_th = [float(x) for x in args.psnr_th.split(",") if x.strip()]
-    mse_th = [float(x) for x in args.mse_th.split(",") if x.strip()]
+    n = args.n_steps + 1  # n_steps intervals -> n_steps+1 points
+    ssim_th = np.linspace(args.ssim_th[0], args.ssim_th[1], n).tolist()
+    psnr_th = np.linspace(args.psnr_th[0], args.psnr_th[1], n).tolist()
+    mse_th = np.linspace(args.mse_th[0], args.mse_th[1], n).tolist()
 
     ssim_summary = summarize_thresholds(ssim_vals, ssim_th, mode="ge")
     psnr_summary = summarize_thresholds(psnr_vals, psnr_th, mode="ge")
     mse_summary = summarize_thresholds(mse_vals, mse_th, mode="le")
 
     # 导出阈值统计
-    with open(args.out_summary, "w", newline="", encoding="utf-8") as f:
+    with open(out_summary, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["metric", "threshold", "condition", "ratio", "count", "total"])
         total = len(results)
@@ -205,8 +219,8 @@ def main():
             w.writerow(["MSE", t, "<=t", f"{p:.6f}", cnt, total])
 
     print(f"[OK] pairs: {len(results)}")
-    print(f"[OK] per-pair saved to: {args.out_csv}")
-    print(f"[OK] threshold summary saved to: {args.out_summary}")
+    print(f"[OK] per-pair saved to: {out_csv}")
+    print(f"[OK] threshold summary saved to: {out_summary}")
 
 
 if __name__ == "__main__":

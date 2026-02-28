@@ -213,12 +213,22 @@ def load_editing_instructions():
         return json.load(f)
 
 
-def p2p_editing(inv_dir, ldm_stable, editing_instruction):
+def p2p_editing(inv_dir, ldm_stable, editing_instruction, cfg=None):
     tokenizer = ldm_stable.tokenizer
     latents = torch.load(os.path.join(inv_dir, 'inv_latents.pt'), weights_only=True)
 
+    # Output suffix: e.g. "_cfg3" when --cfg 3 is given, "" otherwise
+    cfg_tag = f"_cfg{int(cfg)}" if cfg is not None else ""
+
     cfg_schedules_path = os.path.join(inv_dir, 'cfg_schedules.pt')
-    if os.path.exists(cfg_schedules_path):
+    if cfg is not None:
+        # Constant CFG overrides any per-step schedule
+        cfg_schedules = None
+        if os.path.exists(cfg_schedules_path):
+            print(f"[p2p] --cfg={cfg} specified; ignoring cfg_schedules.pt in {inv_dir}")
+        else:
+            print(f"[p2p] Using constant guidance_scale={cfg}")
+    elif os.path.exists(cfg_schedules_path):
         cfg_schedules = torch.load(cfg_schedules_path, weights_only=True)
         print(f"[p2p] Loaded per-step CFG schedules from {cfg_schedules_path}")
     else:
@@ -227,19 +237,21 @@ def p2p_editing(inv_dir, ldm_stable, editing_instruction):
 
     os.makedirs(inv_dir, exist_ok=True)
 
+    generated, skipped = 0, 0
     for i, (_, item) in enumerate(editing_instruction.items()):
+        out_path = os.path.join(inv_dir, f'{i}edi{cfg_tag}.png')
+        if os.path.exists(out_path):
+            skipped += 1
+            continue
+
         latent = latents[i]
         cfg_schedule = cfg_schedules[i] if cfg_schedules is not None else None
         prompt_src = item["original_prompt"].replace("[", "").replace("]", "")
         prompt_tgt = item["editing_prompt"].replace("[", "").replace("]", "")
-        blended_word = item["blended_word"]
         prompts = [prompt_src, prompt_tgt]
 
-        if blended_word != '':
-            s1, s2 = blended_word.split(" ")
-            lb = LocalBlend(prompts, (s1, s2), tokenizer)
-        else:
-            lb = None
+        # LocalBlend is deactivated (step_callback not called in pipeline)
+        lb = None
 
         if len(prompt_src.split()) == len(prompt_tgt.split()):
             controller = AttentionReplace(
@@ -259,15 +271,20 @@ def p2p_editing(inv_dir, ldm_stable, editing_instruction):
         images, x_t = ptp_utils.text2image_ldm_stable(
             ldm_stable, prompts, controller,
             latent=latent, cfg_schedule=cfg_schedule,
+            **(dict(guidance_scale=cfg) if cfg is not None else {}),
         )
-        Image.fromarray(images[0]).save(os.path.join(inv_dir, f'{i}ori.png'))
-        Image.fromarray(images[1]).save(os.path.join(inv_dir, f'{i}edi.png'))
+        Image.fromarray(images[1]).save(out_path)
+        generated += 1
+
+    print(f"\n[p2p] Done. Generated: {generated}, Skipped (existing): {skipped}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--inv_dir", type=str, default="outputs/cfg7/afpi",
                         help="Path to inversion output directory (relative to project root)")
+    parser.add_argument("--cfg", type=float, default=None,
+                        help="Constant CFG scale (overrides per-step cfg_schedules.pt if present)")
     args = parser.parse_args()
 
     # Resolve relative paths against project root
@@ -277,4 +294,4 @@ if __name__ == "__main__":
 
     ldm_stable = load_model()
     editing_instruction = load_editing_instructions()
-    p2p_editing(inv_dir, ldm_stable, editing_instruction)
+    p2p_editing(inv_dir, ldm_stable, editing_instruction, cfg=args.cfg)
